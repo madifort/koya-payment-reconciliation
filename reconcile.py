@@ -1,27 +1,99 @@
 #!/usr/bin/env python3
-"""Payment reconciliation.
+"""Reconcile payment events using the latest attempt per transaction."""
 
-Reads payments.jsonl and works out how much money we actually collected.
-Run:  python3 reconcile.py
-"""
 import json
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from datetime import datetime, timezone
 
-total = 0.0
-count = 0
+BASE_DIR = Path(__file__).resolve().parent
 
-with open("payments.jsonl") as f:
-    for line in f:
-        event = json.loads(line)
+
+def parse_timestamp(value):
+    """Convert an ISO 8601 timestamp into a UTC datetime."""
+    if isinstance(value, str):
+        value = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+
+    raise ValueError("Invalid timestamp")
+
+
+def reconcile_payments():
+    latest_transactions = {}
+
+    with (BASE_DIR / "payments.jsonl").open(
+        "r", encoding="utf-8"
+    ) as file:
+
+        for line in file:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(event, dict):
+                continue
+
+            txn_id = event.get("txn_id")
+
+            if not txn_id:
+                continue
+
+            timestamp = parse_timestamp(event["ts"])
+
+            if (
+                txn_id not in latest_transactions
+                or timestamp > latest_transactions[txn_id]["timestamp"]
+            ):
+                latest_transactions[txn_id] = {
+                    "timestamp": timestamp,
+                    "event": event,
+                }
+
+    total = Decimal("0")
+    count = 0
+
+    for transaction in latest_transactions.values():
+        event = transaction["event"]
+
         if event["status"] == "success":
-            total += float(event["amount"])
+            try:
+                amount = Decimal(str(event["amount"]))
+            except (InvalidOperation, ValueError, TypeError):
+                raise ValueError(
+                    f"Invalid amount for transaction {event['txn_id']}"
+                )
+
+            total += amount
             count += 1
 
-with open("expected.txt") as f:
-    expected = int(f.read().strip())
+    return count, total
 
-if count != expected:
-    print(f"Check failed: counted {count} successful payments, expected {expected}.")
-    print("Something in the data isn't being handled the way the README describes.")
-else:
+
+def main():
+    count, total = reconcile_payments()
+
+    with (BASE_DIR / "expected.txt").open(
+        "r", encoding="utf-8"
+    ) as file:
+        expected = int(file.read().strip())
+
+    if count != expected:
+        print(
+            f"Check failed: counted {count} successful payments, "
+            f"expected {expected}."
+        )
+        return
+
     print(f"Check passed: {count} successful payments.")
     print(f"Your code: KOYA-{round(total)}")
+
+
+if __name__ == "__main__":
+    main()
