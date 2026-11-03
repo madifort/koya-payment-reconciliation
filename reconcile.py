@@ -64,7 +64,7 @@ def reconcile_payments():
 
         if event["status"] == "success":
             try:
-                amount = Decimal(str(event["amount"]))
+                amount = Decimal(str(event["amount"]).replace(",", ""))
             except (InvalidOperation, ValueError, TypeError):
                 raise ValueError(
                     f"Invalid amount for transaction {event['txn_id']}"
